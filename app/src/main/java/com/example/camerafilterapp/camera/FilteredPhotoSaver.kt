@@ -19,7 +19,8 @@ import java.util.Locale
  */
 object FilteredPhotoSaver {
 
-    private const val JPEG_QUALITY = 92
+    // The capture was already JPEG-compressed once by the camera, so keep the re-encode near lossless.
+    private const val JPEG_QUALITY = 95
     private const val ALBUM = "CameraFilterApp"
 
     /** Renders the frame through the GPU filter pipeline, upright. */

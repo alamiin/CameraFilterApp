@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import android.util.Size
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,6 +16,9 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.CameraController
@@ -96,6 +100,17 @@ private const val TAG = "CameraScreen"
 
 private enum class CaptureMode { PHOTO, VIDEO }
 
+/**
+ * Photo mode keeps video bound so the preview stays on the shared stream the filter effect is
+ * attached to. Video mode drops image capture: a full-resolution JPEG stream limits the shared
+ * stream to the display size on many devices (720p on a Galaxy A22), so this frees it to reach
+ * 1080p. Switching mode briefly restarts the camera.
+ */
+private fun CaptureMode.useCases(): Int = when (this) {
+    CaptureMode.PHOTO -> CameraController.IMAGE_CAPTURE or CameraController.VIDEO_CAPTURE
+    CaptureMode.VIDEO -> CameraController.VIDEO_CAPTURE
+}
+
 /** A tap-to-focus point in preview coordinates; [focused] is null while the lens is still scanning. */
 private data class FocusTap(val at: Offset, val focused: Boolean? = null)
 
@@ -167,10 +182,24 @@ private fun CameraContent() {
     val effect = remember { FilterCameraEffect() }
     val controller = remember {
         LifecycleCameraController(context).apply {
-            // Both capture use cases stay bound so switching mode doesn't restart the camera.
-            // Analysis is off to save bandwidth and power.
-            setEnabledUseCases(CameraController.IMAGE_CAPTURE or CameraController.VIDEO_CAPTURE)
-            imageCaptureMode = ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+            // Analysis is off to save bandwidth and power. See useCases() for why this changes by mode.
+            setEnabledUseCases(mode.useCases())
+            // Slower shutter, but lets the camera use its higher-quality still processing.
+            imageCaptureMode = ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
+            imageCaptureResolutionSelector = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_4_3_FALLBACK_AUTO_STRATEGY)
+                // Some sensors (e.g. Galaxy A22) list full resolution only as a slower "high resolution"
+                // size, which CameraX skips by default and falls back to about 1.5 MP.
+                .setAllowedResolutionMode(ResolutionSelector.PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE)
+                .build()
+            // Without this the preview is capped at the display size and is often 4:3, which
+            // FILL_CENTER then crops and upscales on tall screens.
+            previewResolutionSelector = ResolutionSelector.Builder()
+                .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                .setResolutionStrategy(
+                    ResolutionStrategy(Size(1920, 1080), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER)
+                )
+                .build()
             // Preview and video share one stream through the GL shader; stills are rendered offscreen.
             setEffects(setOf(effect))
             // Continuous autofocus is CameraX's default. Taps never reach PreviewView because the
@@ -187,6 +216,8 @@ private fun CameraContent() {
             effect.release()
         }
     }
+
+    LaunchedEffect(mode) { controller.setEnabledUseCases(mode.useCases()) }
 
     LaunchedEffect(useFrontCamera) {
         focusTap = null

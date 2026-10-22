@@ -10,8 +10,8 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /**
- * The filter shader: clarity (sharpening), 3D LUT grade, intensity and brightness, then light leak,
- * vignette, chromatic aberration and film grain. One instance per GL context.
+ * The filter shader: clarity (sharpening), softness, 3D LUT grade, intensity and brightness, then
+ * light leak, vignette, chromatic aberration and film grain. One instance per GL context.
  *
  * [external] selects the camera's samplerExternalOES input; otherwise a regular 2D texture
  * (still photos). Both variants share the same maths so preview, video and photos match.
@@ -35,6 +35,8 @@ internal class FilterProgram(private val external: Boolean) {
     private val uAberration = GLES20.glGetUniformLocation(program, "uAberration")
     private val uClarity = GLES20.glGetUniformLocation(program, "uClarity")
     private val uTexel = GLES20.glGetUniformLocation(program, "uTexel")
+    private val uSoftness = GLES20.glGetUniformLocation(program, "uSoftness")
+    private val uSoftTexel = GLES20.glGetUniformLocation(program, "uSoftTexel")
     private val uLeak = GLES20.glGetUniformLocation(program, "uLeak")
     private val uLeakPos = GLES20.glGetUniformLocation(program, "uLeakPos")
 
@@ -48,7 +50,7 @@ internal class FilterProgram(private val external: Boolean) {
      *   positional effects such as light leaks land in the same place regardless of sensor rotation.
      * @param uprightAspect width / height of the upright image.
      * @param grainCell grain size in output pixels, so grain looks the same at any resolution.
-     *   Also scales the clarity radius for the same reason.
+     *   Also scales the clarity and softness radii for the same reason.
      * @param outputWidth viewport width in pixels.
      * @param outputHeight viewport height in pixels.
      */
@@ -87,6 +89,9 @@ internal class FilterProgram(private val external: Boolean) {
         GLES20.glUniform1f(uClarity, look.clarity * intensity)
         val radius = CLARITY_RADIUS * grainCell
         GLES20.glUniform2f(uTexel, radius / outputWidth, radius / outputHeight)
+        GLES20.glUniform1f(uSoftness, look.softness * intensity)
+        val softRadius = SOFT_RADIUS * grainCell
+        GLES20.glUniform2f(uSoftTexel, softRadius / outputWidth, softRadius / outputHeight)
         val leak = look.lightLeak
         if (leak != null) {
             GLES20.glUniform4f(uLeak, leak.color.r, leak.color.g, leak.color.b, leak.strength * intensity)
@@ -131,6 +136,9 @@ internal class FilterProgram(private val external: Boolean) {
         /** Clarity sampling distance in output pixels (before [draw]'s grainCell scaling). */
         const val CLARITY_RADIUS = 1.5f
 
+        /** Softness sampling distance in output pixels (before grainCell scaling); about skin-pore size at 1080p. */
+        const val SOFT_RADIUS = 4f
+
         const val VERTEX_SHADER = """
             attribute vec4 aPosition;
             attribute vec2 aTexCoord;
@@ -165,6 +173,8 @@ internal class FilterProgram(private val external: Boolean) {
                 uniform float uAberration;
                 uniform float uClarity;
                 uniform vec2 uTexel;
+                uniform float uSoftness;
+                uniform vec2 uSoftTexel;
                 uniform vec4 uLeak;
                 uniform vec2 uLeakPos;
                 varying vec2 vPos;
@@ -187,6 +197,15 @@ internal class FilterProgram(private val external: Boolean) {
                     return mix(s0, s1, b - b0);
                 }
 
+                // Neighbours that differ in colour from the centre get little weight, so edges stay put.
+                void softTap(vec3 centre, vec2 offset, inout vec3 sum, inout float weight) {
+                    vec3 s = sampleInput(vPos + offset);
+                    vec3 d = s - centre;
+                    float w = exp(-dot(d, d) * 40.0);
+                    sum += s * w;
+                    weight += w;
+                }
+
                 float hash(vec2 p) {
                     return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
                 }
@@ -207,6 +226,28 @@ internal class FilterProgram(private val external: Boolean) {
                         // stops halos on hard edges and keeps sensor noise from being boosted too far.
                         float detail = clamp(dot(src - blur, vec3(0.299, 0.587, 0.114)), -0.15, 0.15);
                         src = clamp(src + detail * uClarity * 2.0, 0.0, 1.0);
+                    }
+
+                    if (uSoftness > 0.0) {
+                        // Edge-preserving blur: axis taps at the full radius, diagonals at half, so the
+                        // 8 samples cover the disc without a visible ring.
+                        vec3 sum = src;
+                        float weight = 1.0;
+                        vec2 t = uSoftTexel;
+                        vec2 h = uSoftTexel * 0.5;
+                        softTap(src, vec2(t.x, 0.0), sum, weight);
+                        softTap(src, vec2(-t.x, 0.0), sum, weight);
+                        softTap(src, vec2(0.0, t.y), sum, weight);
+                        softTap(src, vec2(0.0, -t.y), sum, weight);
+                        softTap(src, h, sum, weight);
+                        softTap(src, -h, sum, weight);
+                        softTap(src, vec2(h.x, -h.y), sum, weight);
+                        softTap(src, vec2(-h.x, h.y), sum, weight);
+                        vec3 blurred = sum / weight;
+                        src = mix(src, blurred, uSoftness * 0.8);
+                        // Diffusion-filter glow: bright areas bleed a little light into their surroundings.
+                        float glow = smoothstep(0.6, 1.0, dot(blurred, vec3(0.299, 0.587, 0.114))) * uSoftness * 0.35;
+                        src = 1.0 - (1.0 - src) * (1.0 - blurred * glow);
                     }
 
                     vec3 c = mix(src, applyLut(clamp(src, 0.0, 1.0)), uIntensity);
