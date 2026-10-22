@@ -22,6 +22,56 @@ object Looks {
     val all: List<Look> = listOf(
         Look.ORIGINAL,
 
+        // Social: bright, clean everyday looks in the style of social-app filters. Little grain and
+        // light clarity, since they are mostly used on faces and shared at small sizes.
+        Look(
+            "bright", "Bright", LookCategory.SOCIAL,
+            exposure = 0.2f, contrast = 0.12f, vibrance = 0.3f, highlights = -0.15f, shadows = 0.15f, clarity = 0.2f,
+        ),
+        Look(
+            "glow", "Glow", LookCategory.SOCIAL,
+            exposure = 0.15f, temperature = 0.15f, contrast = -0.08f, highlights = -0.2f, shadows = 0.2f,
+            highlightTone = PEACH, highlightToneStrength = 0.3f, fade = 0.03f, clarity = 0.05f,
+        ),
+        Look(
+            "crisp", "Crisp", LookCategory.SOCIAL,
+            contrast = 0.3f, saturation = 0.2f, temperature = -0.12f, highlights = -0.1f,
+            highlightTone = CYAN, highlightToneStrength = 0.15f, shadowTone = NAVY, shadowToneStrength = 0.15f,
+            clarity = 0.45f,
+        ),
+        Look(
+            "warmth", "Warmth", LookCategory.SOCIAL,
+            temperature = 0.3f, tint = 0.05f, vibrance = 0.25f, contrast = 0.1f, shadows = 0.05f,
+            highlightTone = GOLD, highlightToneStrength = 0.25f, clarity = 0.2f,
+        ),
+        Look(
+            "rosy", "Rosy", LookCategory.SOCIAL,
+            exposure = 0.12f, tint = 0.22f, temperature = 0.05f, saturation = 0.05f, shadows = 0.1f,
+            highlightTone = PINK, highlightToneStrength = 0.35f, clarity = 0.1f,
+        ),
+        Look(
+            "breeze", "Breeze", LookCategory.SOCIAL,
+            exposure = 0.12f, temperature = -0.2f, saturation = -0.1f, contrast = -0.05f,
+            highlightTone = CYAN, highlightToneStrength = 0.2f, shadowTone = Rgb(0.5f, 0.6f, 0.9f),
+            shadowToneStrength = 0.2f, fade = 0.05f, clarity = 0.15f,
+        ),
+        Look(
+            "vibe", "Vibe", LookCategory.SOCIAL,
+            saturation = 0.3f, contrast = 0.3f, highlights = -0.2f, shadows = 0.15f, vignette = 0.25f, clarity = 0.4f,
+        ),
+        Look(
+            "matte", "Matte", LookCategory.SOCIAL,
+            contrast = -0.1f, saturation = -0.15f, shadows = 0.1f,
+            shadowTone = TEAL, shadowToneStrength = 0.2f, highlightTone = CREAM, highlightToneStrength = 0.2f,
+            fade = 0.1f, clarity = 0.15f,
+        ),
+        Look(
+            "sunkissed", "Sunkissed", LookCategory.SOCIAL,
+            exposure = 0.05f, temperature = 0.35f, vibrance = 0.2f, contrast = 0.1f, highlights = -0.15f,
+            highlightTone = ORANGE, highlightToneStrength = 0.2f, clarity = 0.15f,
+            lightLeak = LightLeak(GOLD, 0.25f, 1f, 0f),
+        ),
+
         // Film
         Look(
             "golden_film", "Golden", LookCategory.FILM,

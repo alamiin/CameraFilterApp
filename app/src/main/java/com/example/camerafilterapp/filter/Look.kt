@@ -5,6 +5,7 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 enum class LookCategory(val label: String) {
+    SOCIAL("Social"),
     FILM("Film"),
     PORTRAIT("Portrait"),
     MOOD("Mood"),
