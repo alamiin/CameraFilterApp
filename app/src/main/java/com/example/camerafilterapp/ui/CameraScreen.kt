@@ -19,10 +19,15 @@ import androidx.camera.video.Recording
 import androidx.camera.video.VideoRecordEvent
 import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
+import androidx.camera.view.PreviewView
 import androidx.camera.view.video.AudioConfig
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,7 +61,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -65,6 +73,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.camerafilterapp.camera.CameraPreview
 import com.example.camerafilterapp.camera.FilteredPhotoSaver
+import com.example.camerafilterapp.camera.focusAt
 import com.example.camerafilterapp.camera.newVideoOutputOptions
 import com.example.camerafilterapp.filter.FilterSettings
 import com.example.camerafilterapp.filter.Look
@@ -74,6 +83,7 @@ import com.example.camerafilterapp.filter.LutCache
 import com.example.camerafilterapp.gl.FilterCameraEffect
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -85,6 +95,9 @@ import kotlin.coroutines.resumeWithException
 private const val TAG = "CameraScreen"
 
 private enum class CaptureMode { PHOTO, VIDEO }
+
+/** A tap-to-focus point in preview coordinates; [focused] is null while the lens is still scanning. */
+private data class FocusTap(val at: Offset, val focused: Boolean? = null)
 
 private val requiredPermissions: Array<String> =
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -148,6 +161,8 @@ private fun CameraContent() {
     var saving by remember { mutableStateOf(false) }
     var recording by remember { mutableStateOf<Recording?>(null) }
     var recordedNanos by remember { mutableLongStateOf(0L) }
+    var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var focusTap by remember { mutableStateOf<FocusTap?>(null) }
 
     val effect = remember { FilterCameraEffect() }
     val controller = remember {
@@ -158,6 +173,9 @@ private fun CameraContent() {
             imageCaptureMode = ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
             // Preview and video share one stream through the GL shader; stills are rendered offscreen.
             setEffects(setOf(effect))
+            // Continuous autofocus is CameraX's default. Taps never reach PreviewView because the
+            // swipe overlay sits on top, so tap-to-focus is driven from Compose via focusAt instead.
+            isTapToFocusEnabled = false
         }
     }
 
@@ -171,6 +189,7 @@ private fun CameraContent() {
     }
 
     LaunchedEffect(useFrontCamera) {
+        focusTap = null
         controller.cameraSelector =
             if (useFrontCamera) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
     }
@@ -193,6 +212,22 @@ private fun CameraContent() {
     }
 
     val isRecording = recording != null
+
+    fun tapToFocus(at: Offset) {
+        val view = previewView ?: return
+        val tap = FocusTap(at)
+        val started = controller.focusAt(view, at.x, at.y) { focused ->
+            if (focusTap == tap) focusTap = tap.copy(focused = focused)
+        }
+        if (started) focusTap = tap
+    }
+
+    // Fade the ring shortly after the result; the timeout covers a result that never arrives.
+    LaunchedEffect(focusTap) {
+        val tap = focusTap ?: return@LaunchedEffect
+        delay(if (tap.focused == null) 6_000 else 1_000)
+        focusTap = null
+    }
 
     fun takePhoto() {
         if (saving) return
@@ -262,8 +297,16 @@ private fun CameraContent() {
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        CameraPreview(controller = controller, modifier = Modifier.fillMaxSize())
-        SwipeArea(onPrevious = { stepLook(-1) }, onNext = { stepLook(1) }, modifier = Modifier.fillMaxSize())
+        CameraPreview(controller = controller, modifier = Modifier.fillMaxSize(), onView = { previewView = it })
+        // Fills the same box as the preview, so tap offsets are already in PreviewView coordinates.
+        SwipeArea(
+            onPrevious = { stepLook(-1) },
+            onNext = { stepLook(1) },
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) { detectTapGestures(onTap = ::tapToFocus) },
+        )
+        focusTap?.let { FocusRing(it) }
         LookNameOverlay(look, Modifier.align(Alignment.Center))
 
         if (isRecording) {
@@ -356,6 +399,20 @@ private fun ShutterButton(mode: CaptureMode, busy: Boolean, recording: Boolean, 
         ) {
             if (busy) CircularProgressIndicator(Modifier.size(28.dp), color = Color.White, strokeWidth = 3.dp)
         }
+    }
+}
+
+@Composable
+private fun FocusRing(tap: FocusTap) {
+    val scale = remember(tap.at) { Animatable(1.4f) }
+    LaunchedEffect(scale) { scale.animateTo(1f, tween(durationMillis = 200)) }
+    val color = when (tap.focused) {
+        true -> Color(0xFFFFD54F)
+        false -> Color.White.copy(alpha = 0.5f)
+        null -> Color.White
+    }
+    Canvas(Modifier.fillMaxSize()) {
+        drawCircle(color, radius = 36.dp.toPx() * scale.value, center = tap.at, style = Stroke(2.dp.toPx()))
     }
 }
 
