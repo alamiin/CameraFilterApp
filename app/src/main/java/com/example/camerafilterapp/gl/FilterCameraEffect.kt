@@ -1,6 +1,7 @@
 package com.example.camerafilterapp.gl
 
 import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.graphics.SurfaceTexture
 import android.os.Handler
 import android.os.HandlerThread
@@ -14,6 +15,7 @@ import androidx.camera.core.SurfaceOutput
 import androidx.camera.core.SurfaceProcessor
 import androidx.camera.core.SurfaceRequest
 import com.example.camerafilterapp.filter.FilterSettings
+import com.example.camerafilterapp.filter.LutCache
 import com.example.camerafilterapp.filter.Looks
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,18 +72,28 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
     val executor = Executor { if (!handler.post(it)) Log.w(TAG, "GL thread gone, task dropped") }
 
     private val renderer = GlFilterRenderer()
-    private val outputs = LinkedHashMap<SurfaceOutput, Surface>()
+    private val outputs = LinkedHashMap<SurfaceOutput, Output>()
     private var activeInputs = 0
     private var released = false
 
     private val textureMatrix = FloatArray(16)
     private val outputMatrix = FloatArray(16)
     private val thumbnailMatrix = FloatArray(16)
-    private var thumbnailSourceSize: Size? = null
+    private var thumbnailSource: Output? = null
+    private var thumbnailSourceSize = Size(0, 0)
+
+    /** From CameraX's input transformation info: what makes the camera buffer upright. */
+    private var inputRotationDegrees = 0
+    private var inputMirroring = false
+    private var inputSensorToBuffer = Matrix()
+
+    /** An output surface and the transform from its image coordinates to upright ones. */
+    private class Output(val surface: Surface, var upright: Affine)
 
     private val _thumbnails = MutableStateFlow<Map<String, Bitmap>>(emptyMap())
     val thumbnails: StateFlow<Map<String, Bitmap>> = _thumbnails.asStateFlow()
     private var lastThumbnailsAt = 0L
+    private var lutsReady = false
     private var framesSinceInput = 0
     private val frameStats = FrameStats()
 
@@ -94,7 +106,7 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
             if (released) return@post
             released = true
             outputs.keys.forEach { it.close() }
-            outputs.values.forEach { renderer.unregisterOutput(it) }
+            outputs.values.forEach { renderer.unregisterOutput(it.surface) }
             outputs.clear()
             maybeTearDown()
         }
@@ -109,8 +121,10 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
         framesSinceInput = 0
         frameStats.reset()
         request.setTransformationInfoListener(executor) { info ->
-            renderer.rotationDegrees = info.rotationDegrees
-            renderer.mirroring = info.isMirroring
+            inputRotationDegrees = info.rotationDegrees
+            inputMirroring = info.isMirroring
+            inputSensorToBuffer = Matrix(info.sensorToBufferTransform)
+            for ((output, entry) in outputs) entry.upright = uprightTransform(output)
             lastThumbnailsAt = 0L // orientation changed: refresh thumbnails soon
         }
         val surfaceTexture = SurfaceTexture(renderer.textureId).apply {
@@ -138,7 +152,7 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
         val surface = surfaceOutput.getSurface(executor) { event ->
             // CameraX wants the output back (rebind, camera switch, recording surface change).
             event.surfaceOutput.close()
-            outputs.remove(event.surfaceOutput)?.let { renderer.unregisterOutput(it) }
+            outputs.remove(event.surfaceOutput)?.let { renderer.unregisterOutput(it.surface) }
         }
         try {
             renderer.registerOutput(surface)
@@ -146,7 +160,25 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
             surfaceOutput.close()
             throw ProcessingException().apply { initCause(e) }
         }
-        outputs[surfaceOutput] = surface
+        outputs[surfaceOutput] = Output(surface, uprightTransform(surfaceOutput))
+    }
+
+    /**
+     * Maps [output]'s image coordinates to upright ones. CameraX may already have rotated and
+     * mirrored an output (a Preview-only effect gets an upright output) or left it in sensor
+     * orientation (the shared preview + video stream), so the rotation CameraX applied to this
+     * output, found by comparing its sensor-to-buffer transform with the input's, is taken off
+     * the rotation and mirroring that make the input upright.
+     */
+    private fun uprightTransform(output: SurfaceOutput): Affine {
+        val rotate = Affine.rotateClockwise(inputRotationDegrees)
+        val inputUpright = if (inputMirroring) Affine.FLIP_X * rotate else rotate
+        val inputToOutput = Matrix()
+        if (!inputSensorToBuffer.invert(inputToOutput)) return inputUpright
+        inputToOutput.postConcat(output.sensorToBufferTransform)
+        val m = FloatArray(9).also { inputToOutput.getValues(it) }
+        val applied = Affine.aligned(m[Matrix.MSCALE_X], m[Matrix.MSKEW_X], m[Matrix.MSKEW_Y], m[Matrix.MSCALE_Y])
+        return inputUpright * applied.inverseAligned()
     }
 
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
@@ -157,15 +189,16 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
         surfaceTexture.updateTexImage()
         surfaceTexture.getTransformMatrix(textureMatrix)
         val timestamp = surfaceTexture.timestamp
-        thumbnailSourceSize = null
-        for ((output, surface) in outputs) {
+        thumbnailSource = null
+        for ((output, entry) in outputs) {
             // Combines the SurfaceTexture transform with this output's crop/rotation/mirroring.
             output.updateTransformMatrix(outputMatrix, textureMatrix)
-            renderer.render(surface, output.size, outputMatrix, timestamp)
-            if (thumbnailSourceSize == null) {
+            renderer.render(entry.surface, output.size, outputMatrix, entry.upright, timestamp)
+            if (thumbnailSource == null) {
                 // Thumbnails reuse an output's matrix: the raw SurfaceTexture matrix can carry a
                 // device-specific rotation that CameraX has already accounted for here.
                 outputMatrix.copyInto(thumbnailMatrix)
+                thumbnailSource = entry
                 thumbnailSourceSize = output.size
             }
         }
@@ -175,13 +208,19 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
     }
 
     private fun maybeRenderThumbnails() {
-        val sourceSize = thumbnailSourceSize ?: return
+        val source = thumbnailSource ?: return
         val now = SystemClock.elapsedRealtime()
         // Skip the first frames after (re)start while auto-exposure settles.
         if (framesSinceInput < WARMUP_FRAMES || now - lastThumbnailsAt < THUMBNAIL_INTERVAL_MS) return
+        // Every look needs its LUT. Building them here would stall the preview for seconds on a
+        // slow device, so wait for the background prewarm (see LutCache.prewarm) to finish.
+        if (!lutsReady) {
+            lutsReady = LutCache.isReady(Looks.all)
+            if (!lutsReady) return
+        }
         lastThumbnailsAt = now
         try {
-            val bitmaps = renderer.renderThumbnails(Looks.all, thumbnailMatrix, sourceSize, THUMBNAIL_SIZE)
+            val bitmaps = renderer.renderThumbnails(Looks.all, thumbnailMatrix, thumbnailSourceSize, source.upright, THUMBNAIL_SIZE)
             _thumbnails.value = Looks.all.zip(bitmaps) { look, bitmap -> look.id to bitmap }.toMap()
         } catch (e: IllegalStateException) {
             Log.w(TAG, "Thumbnail render failed", e)

@@ -8,6 +8,8 @@ import com.example.camerafilterapp.filter.LutCache
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import kotlin.math.abs
+import kotlin.math.sign
 
 /**
  * The filter shader: clarity (sharpening), softness, 3D LUT grade, intensity and brightness, then
@@ -343,6 +345,12 @@ internal data class Affine(
         d * inner.a + e * inner.d, d * inner.b + e * inner.e, d * inner.c + e * inner.f + f,
     )
 
+    /** True if x and y trade places, as in a 90 or 270 degree rotation. */
+    val swapsAxes: Boolean get() = abs(b) > abs(a)
+
+    /** Inverse of a map made only of 90-degree rotations and flips about the centre (see [aligned]). */
+    fun inverseAligned() = Affine(a, d, 0.5f - 0.5f * (a + d), b, e, 0.5f - 0.5f * (b + e))
+
     /** Column-major 4x4 for glUniformMatrix4fv / android.opengl.Matrix. */
     fun toMat4() = floatArrayOf(
         a, d, 0f, 0f,
@@ -373,6 +381,17 @@ internal data class Affine(
 
         /** Inverse of [rotateClockwise]: upright coordinates back to sensor-oriented ones. */
         fun unrotateClockwise(degrees: Int): Affine = rotateClockwise(360 - degrees)
+
+        /**
+         * The rotation by a multiple of 90 degrees, with or without a flip, about the centre that is
+         * closest to the linear part (a, b, d, e). Drops scale and translation, e.g. from a crop.
+         */
+        fun aligned(a: Float, b: Float, d: Float, e: Float): Affine {
+            fun row(x: Float, y: Float) = if (abs(x) >= abs(y)) Pair(sign(x), 0f) else Pair(0f, sign(y))
+            val (na, nb) = row(a, b)
+            val (nd, ne) = row(d, e)
+            return Affine(na, nb, 0.5f - 0.5f * (na + nb), nd, ne, 0.5f - 0.5f * (nd + ne))
+        }
 
         /** Scales around the centre, e.g. to centre-crop. */
         fun scaleAboutCentre(sx: Float, sy: Float) = Affine(sx, 0f, 0.5f - 0.5f * sx, 0f, sy, 0.5f - 0.5f * sy)

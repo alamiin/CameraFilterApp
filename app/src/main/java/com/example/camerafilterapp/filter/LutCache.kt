@@ -42,9 +42,15 @@ object LutCache {
         assets = context.applicationContext.assets
     }
 
-    /** Returns a read-only view; safe to share between threads and GL contexts. */
+    /**
+     * Returns a read-only view; safe to share between threads and GL contexts. A look not yet built
+     * is built on the calling thread, or waited for if another thread is already building it.
+     */
     fun get(look: Look): ByteBuffer =
-        cache.getOrPut(look.id) { build(look) }.asReadOnlyBuffer().apply { position(0) }
+        cache.computeIfAbsent(look.id) { build(look) }.asReadOnlyBuffer().apply { position(0) }
+
+    /** True once every look in [looks] is built, so [get] returns without blocking. */
+    fun isReady(looks: List<Look>): Boolean = looks.all { cache.containsKey(it.id) }
 
     /** Builds every LUT up front (about 1M grade evaluations) so the GL thread never stalls. */
     fun prewarm(looks: List<Look> = Looks.all) = looks.forEach { get(it) }
