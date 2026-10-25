@@ -23,16 +23,27 @@ import java.util.concurrent.Executor
 /**
  * CameraX effect that runs [FilterSurfaceProcessor] on the shared preview + video stream,
  * so the live preview and the recorded video receive identical, shader-filtered frames.
+ *
+ * CameraX only attaches an effect when every one of its targets is bound, so use [previewOnly]
+ * while VideoCapture is unbound. Set one or the other on the controller, never both: with both,
+ * CameraX would attach the second to the shared stream's Preview child and filter it twice.
  */
-class FilterCameraEffect private constructor(private val processor: FilterSurfaceProcessor) :
+class FilterCameraEffect private constructor(targets: Int, private val processor: FilterSurfaceProcessor) :
     CameraEffect(
-        PREVIEW or VIDEO_CAPTURE,
+        targets,
         processor.executor,
         processor,
         { error -> Log.e(TAG, "Camera effect error", error) },
     ) {
 
-    constructor() : this(FilterSurfaceProcessor())
+    constructor() : this(PREVIEW or VIDEO_CAPTURE, FilterSurfaceProcessor())
+
+    /**
+     * The same filter applied to Preview alone, sharing this effect's GL thread, settings and
+     * thumbnails. Without VideoCapture there is no stream sharing, so CameraX skips its own copy
+     * pass and the preview is resampled once instead of twice.
+     */
+    val previewOnly: CameraEffect by lazy { FilterCameraEffect(PREVIEW, processor) }
 
     /** Live thumbnails of every look in [Looks.all], keyed by look id. Refreshed every few seconds. */
     val thumbnails: StateFlow<Map<String, Bitmap>> get() = processor.thumbnails
@@ -40,7 +51,7 @@ class FilterCameraEffect private constructor(private val processor: FilterSurfac
     /** Safe to call from any thread; applied from the next rendered frame. */
     fun setSettings(settings: FilterSettings) = processor.setSettings(settings)
 
-    /** Call after the camera is unbound. GL resources are freed once CameraX returns the input surface. */
+    /** Call after the camera is unbound. GL resources are freed once CameraX returns the input surface. Also releases [previewOnly]. */
     fun release() = processor.release()
 
     private companion object {
@@ -72,6 +83,7 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
     val thumbnails: StateFlow<Map<String, Bitmap>> = _thumbnails.asStateFlow()
     private var lastThumbnailsAt = 0L
     private var framesSinceInput = 0
+    private val frameStats = FrameStats()
 
     fun setSettings(settings: FilterSettings) {
         handler.post { renderer.settings = settings }
@@ -95,6 +107,7 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
         }
         ensureInitialised()
         framesSinceInput = 0
+        frameStats.reset()
         request.setTransformationInfoListener(executor) { info ->
             renderer.rotationDegrees = info.rotationDegrees
             renderer.mirroring = info.isMirroring
@@ -138,6 +151,7 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
 
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture) {
         if (released) return
+        val startNs = SystemClock.elapsedRealtimeNanos()
         // Always latch the frame, even with no outputs, or the camera's buffer queue stalls.
         renderer.makeContextCurrent()
         surfaceTexture.updateTexImage()
@@ -156,6 +170,7 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
             }
         }
         framesSinceInput++
+        frameStats.onFrame(timestamp, SystemClock.elapsedRealtimeNanos() - startNs)
         maybeRenderThumbnails()
     }
 

@@ -39,6 +39,7 @@ internal class FilterProgram(private val external: Boolean) {
     private val uSoftTexel = GLES20.glGetUniformLocation(program, "uSoftTexel")
     private val uLeak = GLES20.glGetUniformLocation(program, "uLeak")
     private val uLeakPos = GLES20.glGetUniformLocation(program, "uLeakPos")
+    private val uDither = GLES20.glGetUniformLocation(program, "uDither")
 
     private val lutTextures = HashMap<String, Int>()
 
@@ -81,6 +82,8 @@ internal class FilterProgram(private val external: Boolean) {
         GLES20.glUniform1f(uAspect, uprightAspect)
         GLES20.glUniform1f(uIntensity, intensity)
         GLES20.glUniform1f(uBrightness, settings.brightness)
+        // Original with no brightness passes camera pixels through untouched, so nothing to dither.
+        GLES20.glUniform1f(uDither, if (look.isIdentity && settings.brightness == 0f) 0f else 1f / 255f)
         GLES20.glUniform1f(uVignette, look.vignette * intensity)
         GLES20.glUniform1f(uGrain, look.grain * intensity)
         GLES20.glUniform1f(uGrainCell, grainCell)
@@ -177,6 +180,7 @@ internal class FilterProgram(private val external: Boolean) {
                 uniform vec2 uSoftTexel;
                 uniform vec4 uLeak;
                 uniform vec2 uLeakPos;
+                uniform float uDither;
                 varying vec2 vPos;
 
                 const float N = $n;
@@ -274,6 +278,10 @@ internal class FilterProgram(private val external: Boolean) {
                         // Strongest in the midtones, like film.
                         c += noise * uGrain * (1.0 - abs(l - 0.5) * 1.4);
                     }
+
+                    // Half-step dither before the 8-bit output, so smooth gradients that a grade has
+                    // stretched (skies, walls) break up into noise instead of visible bands.
+                    c += (hash(gl_FragCoord.xy + uSeed + 0.37) - 0.5) * uDither;
 
                     gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
                 }
