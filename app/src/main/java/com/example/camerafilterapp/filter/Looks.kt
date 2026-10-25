@@ -127,6 +127,10 @@ object Looks {
             highlightTone = GOLD, highlightToneStrength = 0.3f, vignette = 0.15f, clarity = 0.15f,
         ),
         Look("velvet", "Velvet", LookCategory.PORTRAIT, lutImage = "luts/velvet.png", softness = 0.7f, vignette = 0.1f),
+        Look(
+            "cinematic_portrait", "Cinematic", LookCategory.PORTRAIT,
+            lutImage = "luts/PresetproCinematicPortrait.cube", vignette = 0.15f,
+        ),
 
         // Mood
         Look(
@@ -230,6 +234,10 @@ object Looks {
             "leak", "Light Leak", LookCategory.RETRO,
             temperature = 0.2f, fade = 0.04f, grain = 0.025f,
             lightLeak = LightLeak(Rgb(1f, 0.35f, 0.25f), 0.6f, 1f, 0.3f),
+        ),
+        Look(
+            "polaroid", "Polaroid", LookCategory.RETRO,
+            lutImage = "luts/PresetproPolaroidColor.cube", vignette = 0.2f, grain = 0.02f,
         ),
     )
 

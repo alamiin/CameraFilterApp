@@ -118,10 +118,14 @@ class LookTest {
         looks.forEach { look ->
             val file = File("src/main/assets/${look.lutImage}")
             assertTrue("${look.id}: missing ${file.path}", file.isFile)
-            val image = ImageIO.read(file)
-            assertEquals("${look.id}: not square", image.width, image.height)
-            val side = image.width
-            val lut = LutCache.fromLookupImage(image.getRGB(0, 0, side, side, null, 0, side), side)
+            val lut = if (file.extension.equals("cube", ignoreCase = true)) {
+                LutCache.fromCube(file.readText())
+            } else {
+                val image = ImageIO.read(file)
+                assertEquals("${look.id}: not square", image.width, image.height)
+                val side = image.width
+                LutCache.fromLookupImage(image.getRGB(0, 0, side, side, null, 0, side), side)
+            }
 
             val n = LutCache.SIZE
             var total = 0f
@@ -132,6 +136,53 @@ class LookTest {
             }
             val mean = total / (n * n * n)
             assertTrue("${look.id} mean change $mean is too subtle", mean >= MIN_MEAN_CHANGE)
+        }
+    }
+
+    @Test
+    fun neutralCubeGivesIdentityLut() {
+        for (levels in listOf(2, 17, 32)) {
+            val lut = LutCache.fromCube(neutralCube(levels))
+            val n = LutCache.SIZE
+            for (g in 0 until n) for (b in 0 until n) for (r in 0 until n) {
+                val index = (g * LutCache.WIDTH + b * n + r) * 4
+                val expected = floatArrayOf(r / (n - 1f), g / (n - 1f), b / (n - 1f))
+                for (c in 0..2) assertEquals("levels $levels", expected[c], byteAt(lut, index + c), 1f / 255f)
+            }
+        }
+    }
+
+    @Test
+    fun cubeChannelOrderIsRedFastest() {
+        // Swap red and blue: if the parser read blue fastest, this would come out as identity.
+        val swapped = neutralCube(2).lines().joinToString("\n") { line ->
+            val parts = line.split(" ")
+            if (parts.size == 3 && parts[0].toFloatOrNull() != null) "${parts[2]} ${parts[1]} ${parts[0]}" else line
+        }
+        val lut = LutCache.fromCube(swapped)
+        val n = LutCache.SIZE
+        val pureRed = (0 * LutCache.WIDTH + 0 * n + (n - 1)) * 4
+        assertEquals(0f, byteAt(lut, pureRed), 1f / 255f)
+        assertEquals(1f, byteAt(lut, pureRed + 2), 1f / 255f)
+    }
+
+    @Test
+    fun rejectsMalformedCubes() {
+        val bad = listOf(
+            "0 0 0", // data before size
+            "LUT_3D_SIZE 2\n0 0 0", // too few rows
+            "LUT_1D_SIZE 2\n0 0 0\n1 1 1",
+            "LUT_3D_SIZE 2\nDOMAIN_MAX 2.0 2.0 2.0\n" + neutralCube(2).substringAfter("LUT_3D_SIZE 2\n"),
+        )
+        bad.forEach { text -> assertThrows(text, IllegalArgumentException::class.java) { LutCache.fromCube(text) } }
+    }
+
+    /** The do-nothing .cube LUT: red changes fastest, then green, then blue. */
+    private fun neutralCube(levels: Int) = buildString {
+        append("# comment\nTITLE \"neutral\"\nLUT_3D_SIZE $levels\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n")
+        val step = 1f / (levels - 1)
+        for (b in 0 until levels) for (g in 0 until levels) for (r in 0 until levels) {
+            append("${r * step} ${g * step} ${b * step}\n")
         }
     }
 

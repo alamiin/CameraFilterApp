@@ -15,7 +15,8 @@ import kotlin.math.roundToInt
  * textures): [SIZE] blue slices side by side, each SIZE x SIZE with red across and green down.
  * The shader interpolates bilinearly inside a slice and linearly between slices.
  *
- * Looks with a [Look.lutImage] are resampled from that PNG instead; see [fromLookupImage].
+ * Looks with a [Look.lutImage] are resampled from that file instead: a PNG lookup image (see
+ * [fromLookupImage]) or an Adobe/Resolve `.cube` file (see [fromCube]).
  */
 object LutCache {
 
@@ -28,6 +29,8 @@ object LutCache {
 
     /** Bit offsets of red, green and blue in an ARGB pixel. */
     private val CHANNEL_SHIFTS = intArrayOf(16, 8, 0)
+
+    private val WHITESPACE = Regex("\\s+")
 
     private val cache = ConcurrentHashMap<String, ByteBuffer>()
 
@@ -49,11 +52,15 @@ object LutCache {
     private fun build(look: Look): ByteBuffer {
         val image = look.lutImage ?: return fromGrade(look)
         return try {
-            val pixels = loadPixels(image)
-            fromLookupImage(pixels.first, pixels.second)
+            if (image.endsWith(".cube", ignoreCase = true)) {
+                fromCube(loadText(image))
+            } else {
+                val pixels = loadPixels(image)
+                fromLookupImage(pixels.first, pixels.second)
+            }
         } catch (e: Exception) {
             // A bad asset shouldn't take the camera down; the look shows unfiltered instead.
-            Log.e(TAG, "Could not load LUT image $image for ${look.id}", e)
+            Log.e(TAG, "Could not load LUT $image for ${look.id}", e)
             fromGrade(Look.ORIGINAL)
         }
     }
@@ -95,12 +102,58 @@ object LutCache {
     internal fun fromLookupImage(pixels: IntArray, side: Int): ByteBuffer {
         val levels = levelsFor(side)
         val tiles = side / levels
-        fun channel(r: Int, g: Int, b: Int, shift: Int): Float {
+        return resample(levels) { r, g, b, channel ->
             val x = (b % tiles) * levels + r
             val y = (b / tiles) * levels + g
-            return ((pixels[y * side + x] shr shift) and 0xFF) / 255f
+            ((pixels[y * side + x] shr CHANNEL_SHIFTS[channel]) and 0xFF) / 255f
         }
+    }
 
+    /**
+     * Resamples the text of a 3D `.cube` LUT (Adobe / DaVinci Resolve format) to this cache's [SIZE]
+     * grid. Data rows are "R G B" floats with red changing fastest, then green, then blue.
+     *
+     * Only the 0..1 input domain is supported, which is what photo and video tools export.
+     */
+    internal fun fromCube(text: String): ByteBuffer {
+        var levels = 0
+        var data: FloatArray? = null
+        var count = 0
+        for (raw in text.lineSequence()) {
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            val parts = line.split(WHITESPACE)
+            if (parts[0].toFloatOrNull() != null) {
+                val values = requireNotNull(data) { "Data row before LUT_3D_SIZE" }
+                require(parts.size == 3) { "Expected 3 values per row, got \"$line\"" }
+                require(count + 3 <= values.size) { "More than $levels^3 data rows" }
+                for (p in parts) values[count++] = p.toFloat()
+                continue
+            }
+            when (parts[0]) {
+                "LUT_3D_SIZE" -> {
+                    levels = parts[1].toInt()
+                    require(levels in 2..256) { "Unsupported LUT_3D_SIZE $levels" }
+                    data = FloatArray(levels * levels * levels * 3)
+                }
+                "LUT_1D_SIZE" -> throw IllegalArgumentException("1D .cube LUTs are not supported")
+                "DOMAIN_MIN" -> require(parts.drop(1).all { it.toFloat() == 0f }) { "Unsupported $line" }
+                "DOMAIN_MAX" -> require(parts.drop(1).all { it.toFloat() == 1f }) { "Unsupported $line" }
+                "LUT_3D_INPUT_RANGE" -> require(parts[1].toFloat() == 0f && parts[2].toFloat() == 1f) { "Unsupported $line" }
+                // TITLE and any other keywords don't affect the colours.
+            }
+        }
+        val values = requireNotNull(data) { "Missing LUT_3D_SIZE" }
+        require(count == values.size) { "Expected ${values.size / 3} data rows, got ${count / 3}" }
+        return resample(levels) { r, g, b, channel -> values[((b * levels + g) * levels + r) * 3 + channel] }
+    }
+
+    /**
+     * Trilinearly resamples a source LUT with [levels] points per axis to [SIZE].
+     *
+     * @param sample the source value (0..1) of channel 0, 1 or 2 (red, green, blue) at grid point r, g, b.
+     */
+    private fun resample(levels: Int, sample: (r: Int, g: Int, b: Int, channel: Int) -> Float): ByteBuffer {
         val buffer = newBuffer()
         val scale = (levels - 1f) / (SIZE - 1)
         for (g in 0 until SIZE) {
@@ -118,9 +171,9 @@ object LutCache {
                     val wr = fr - r0
                     val wg = fg - g0
                     val wb = fb - b0
-                    for (shift in CHANNEL_SHIFTS) {
+                    for (channel in 0..2) {
                         fun lerpR(gi: Int, bi: Int) =
-                            channel(r0, gi, bi, shift) * (1 - wr) + channel(r1, gi, bi, shift) * wr
+                            sample(r0, gi, bi, channel) * (1 - wr) + sample(r1, gi, bi, channel) * wr
                         fun lerpRG(bi: Int) = lerpR(g0, bi) * (1 - wg) + lerpR(g1, bi) * wg
                         buffer.put(toByte(lerpRG(b0) * (1 - wb) + lerpRG(b1) * wb))
                     }
@@ -158,6 +211,11 @@ object LutCache {
         } finally {
             bitmap.recycle()
         }
+    }
+
+    private fun loadText(path: String): String {
+        val manager = checkNotNull(assets) { "LutCache.init was not called" }
+        return manager.open(path).bufferedReader().use { it.readText() }
     }
 
     private fun newBuffer(): ByteBuffer = ByteBuffer.allocateDirect(WIDTH * HEIGHT * 4).order(ByteOrder.nativeOrder())

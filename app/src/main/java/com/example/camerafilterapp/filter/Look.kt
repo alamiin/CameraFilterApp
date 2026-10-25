@@ -27,7 +27,7 @@ data class LightLeak(val color: Rgb, val strength: Float, val x: Float, val y: F
  *
  * Everything in the "grade" section is a pure per-pixel colour function, baked into a 3D LUT by
  * [LutCache] and applied on the GPU with one lookup. A look can instead take its LUT from a
- * designer-made image ([lutImage]), in which case the grade parameters are ignored. The "effects"
+ * designer-made image or .cube file ([lutImage]), in which case the grade parameters are ignored. The "effects"
  * section depends on pixel position or randomness, so it runs directly in the fragment shader.
  *
  * Ranges are roughly -1..1 unless noted; 0 means "no change".
@@ -54,7 +54,7 @@ data class Look(
     val highlightToneStrength: Float = 0f,
     val mono: Rgb? = null, // channel-mixer weights; non-null converts to black and white
     val fade: Float = 0f, // 0..0.3, lifts blacks
-    val lutImage: String? = null, // asset path of a PNG lookup image (see LutCache); replaces the grade
+    val lutImage: String? = null, // asset path of a PNG lookup image or .cube file (see LutCache); replaces the grade
     // Effects (shader only)
     val clarity: Float = 0f, // 0..1, sharpens fine detail so the image reads crisp
     val softness: Float = 0f, // 0..1, edge-preserving smoothing (skin, fine texture) plus a soft highlight glow
