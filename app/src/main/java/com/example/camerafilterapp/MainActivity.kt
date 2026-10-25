@@ -12,6 +12,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         LutCache.init(this)
+        // Starts now, so the looks are ready by the time the camera's first frames arrive.
+        LutCache.prewarm()
         enableEdgeToEdge()
         setContent {
             CameraFilterAppTheme {

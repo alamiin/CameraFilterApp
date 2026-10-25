@@ -99,7 +99,6 @@ import com.example.camerafilterapp.filter.FilterSettings
 import com.example.camerafilterapp.filter.Look
 import com.example.camerafilterapp.filter.LookCategory
 import com.example.camerafilterapp.filter.Looks
-import com.example.camerafilterapp.filter.LutCache
 import com.example.camerafilterapp.gl.FilterCameraEffect
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -340,9 +339,6 @@ private fun CameraContent() {
         controller.zoomState.observe(lifecycleOwner, observer)
         onDispose { controller.zoomState.removeObserver(observer) }
     }
-
-    // Bake every look's LUT off the main and GL threads so switching and thumbnails never stall.
-    LaunchedEffect(Unit) { withContext(Dispatchers.Default) { LutCache.prewarm() } }
 
     val look = Looks.byId(lookId)
     val settings = FilterSettings(look, intensities[look.id] ?: 1f, brightness)

@@ -93,7 +93,7 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
     private val _thumbnails = MutableStateFlow<Map<String, Bitmap>>(emptyMap())
     val thumbnails: StateFlow<Map<String, Bitmap>> = _thumbnails.asStateFlow()
     private var lastThumbnailsAt = 0L
-    private var lutsReady = false
+    private var allLutsReady = false
     private var framesSinceInput = 0
     private val frameStats = FrameStats()
 
@@ -210,18 +210,20 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
     private fun maybeRenderThumbnails() {
         val source = thumbnailSource ?: return
         val now = SystemClock.elapsedRealtime()
-        // Skip the first frames after (re)start while auto-exposure settles.
-        if (framesSinceInput < WARMUP_FRAMES || now - lastThumbnailsAt < THUMBNAIL_INTERVAL_MS) return
-        // Every look needs its LUT. Building them here would stall the preview for seconds on a
-        // slow device, so wait for the background prewarm (see LutCache.prewarm) to finish.
-        if (!lutsReady) {
-            lutsReady = LutCache.isReady(Looks.all)
-            if (!lutsReady) return
-        }
+        // Refresh often while auto-exposure settles after a (re)start, so the first thumbnails can be
+        // shown early, and while looks are still being built, so each appears soon after its LUT.
+        val settling = framesSinceInput < SETTLE_FRAMES || !allLutsReady
+        val interval = if (settling) SETTLING_THUMBNAIL_INTERVAL_MS else THUMBNAIL_INTERVAL_MS
+        // The very first frames can be black or green on some devices.
+        if (framesSinceInput < WARMUP_FRAMES || now - lastThumbnailsAt < interval) return
+        // Only looks whose LUT is built: building one here would stall the preview (see LutCache.prewarm).
+        val looks = if (allLutsReady) Looks.all else Looks.all.filter(LutCache::isReady)
+        if (looks.isEmpty()) return
+        allLutsReady = looks.size == Looks.all.size
         lastThumbnailsAt = now
         try {
-            val bitmaps = renderer.renderThumbnails(Looks.all, thumbnailMatrix, thumbnailSourceSize, source.upright, THUMBNAIL_SIZE)
-            _thumbnails.value = Looks.all.zip(bitmaps) { look, bitmap -> look.id to bitmap }.toMap()
+            val bitmaps = renderer.renderThumbnails(looks, thumbnailMatrix, thumbnailSourceSize, source.upright, THUMBNAIL_SIZE)
+            _thumbnails.value = looks.zip(bitmaps) { look, bitmap -> look.id to bitmap }.toMap()
         } catch (e: IllegalStateException) {
             Log.w(TAG, "Thumbnail render failed", e)
         }
@@ -247,6 +249,10 @@ internal class FilterSurfaceProcessor : SurfaceProcessor, SurfaceTexture.OnFrame
         const val TAG = "FilterSurfaceProcessor"
         const val THUMBNAIL_SIZE = 128
         const val THUMBNAIL_INTERVAL_MS = 2_000L
-        const val WARMUP_FRAMES = 15
+        const val SETTLING_THUMBNAIL_INTERVAL_MS = 400L
+        const val WARMUP_FRAMES = 5
+
+        /** About 2 s at 30 fps, by when auto-exposure has usually settled. */
+        const val SETTLE_FRAMES = 60
     }
 }
