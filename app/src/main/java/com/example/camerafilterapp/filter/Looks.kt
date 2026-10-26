@@ -126,6 +126,11 @@ object Looks {
             temperature = 0.4f, saturation = 0.1f, contrast = 0.1f,
             highlightTone = GOLD, highlightToneStrength = 0.3f, vignette = 0.15f, clarity = 0.15f,
         ),
+        Look("velvet", "Velvet", LookCategory.PORTRAIT, lutImage = "luts/velvet.png", softness = 0.7f, vignette = 0.1f),
+        Look(
+            "cinematic_portrait", "Cinematic", LookCategory.PORTRAIT,
+            lutImage = "luts/PresetproCinematicPortrait.cube", vignette = 0.15f,
+        ),
 
         // Mood
         Look(
@@ -145,6 +150,8 @@ object Looks {
             gain = Rgb(0.98f, 1.03f, 0.95f), shadowTone = GREEN, shadowToneStrength = 0.35f,
             vignette = 0.3f, grain = 0.02f, clarity = 0.35f,
         ),
+        // From a PNG lookup image (tools/lut_png.py): selective hue shifts the grade sliders can't express.
+        Look("autumn", "Autumn", LookCategory.MOOD, lutImage = "luts/autumn.png", vignette = 0.2f, clarity = 0.25f),
         Look(
             "midnight", "Midnight", LookCategory.MOOD,
             exposure = -0.1f, temperature = -0.25f, contrast = 0.25f, saturation = -0.15f, shadows = 0.1f,
@@ -174,6 +181,7 @@ object Looks {
             highlightTone = ORANGE, highlightToneStrength = 0.25f,
             lightLeak = LightLeak(Rgb(1f, 0.45f, 0.2f), 0.45f, 0f, 0f), vignette = 0.2f, clarity = 0.25f,
         ),
+        Look("emerald", "Emerald", LookCategory.VIVID, lutImage = "luts/emerald.png", clarity = 0.3f),
 
         // Mono
         Look("mono", "Mono", LookCategory.MONO, mono = LUMA_MIX, contrast = 0.15f, clarity = 0.3f),
@@ -226,6 +234,10 @@ object Looks {
             "leak", "Light Leak", LookCategory.RETRO,
             temperature = 0.2f, fade = 0.04f, grain = 0.025f,
             lightLeak = LightLeak(Rgb(1f, 0.35f, 0.25f), 0.6f, 1f, 0.3f),
+        ),
+        Look(
+            "polaroid", "Polaroid", LookCategory.RETRO,
+            lutImage = "luts/PresetproPolaroidColor.cube", vignette = 0.2f, grain = 0.02f,
         ),
     )
 

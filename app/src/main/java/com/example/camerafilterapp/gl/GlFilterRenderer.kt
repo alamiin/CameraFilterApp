@@ -34,10 +34,6 @@ internal class GlFilterRenderer {
 
     var settings = FilterSettings()
 
-    /** Clockwise rotation and mirroring that make the camera buffer upright (from CameraX). */
-    var rotationDegrees = 0
-    var mirroring = false
-
     private var frameCount = 0
 
     private var thumbFbo = 0
@@ -80,8 +76,11 @@ internal class GlFilterRenderer {
         frameCount++
     }
 
-    /** @param texMatrix CameraX's per-output matrix (SurfaceTexture transform plus crop). */
-    fun render(surface: Surface, size: Size, texMatrix: FloatArray, timestampNs: Long) {
+    /**
+     * @param texMatrix CameraX's per-output matrix (SurfaceTexture transform plus crop).
+     * @param upright maps this output's image coordinates (origin top-left) to upright ones.
+     */
+    fun render(surface: Surface, size: Size, texMatrix: FloatArray, upright: Affine, timestampNs: Long) {
         val core = requireEgl()
         val eglSurface = outputSurfaces[surface] ?: return
         if (!core.makeCurrent(eglSurface)) {
@@ -91,14 +90,13 @@ internal class GlFilterRenderer {
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
         GLES20.glViewport(0, 0, size.width, size.height)
 
-        // Output buffers are still sensor-oriented; positional effects need upright coordinates.
-        val upright = uprightTransform() * Affine.FLIP_Y
-        val swapped = rotationDegrees % 180 != 0
-        val aspect = if (swapped) size.height.toFloat() / size.width else size.width.toFloat() / size.height
+        // An output may still be sensor-oriented; positional effects need upright coordinates.
+        val position = upright * Affine.FLIP_Y
+        val aspect = if (upright.swapsAxes) size.height.toFloat() / size.width else size.width.toFloat() / size.height
         val grainCell = maxOf(1f, maxOf(size.width, size.height) / 1280f)
 
         requireProgram().draw(
-            settings, textureId, texMatrix, upright.toMat4(), aspect, seed(), grainCell, size.width, size.height,
+            settings, textureId, texMatrix, position.toMat4(), aspect, seed(), grainCell, size.width, size.height,
         )
         if (!core.swapBuffers(eglSurface, timestampNs)) {
             Log.w(TAG, "eglSwapBuffers failed: ${EglCore.eglErrorHex()}")
@@ -110,12 +108,14 @@ internal class GlFilterRenderer {
      * All tiles go into one framebuffer and are read back with a single glReadPixels.
      *
      * @param outputTexMatrix CameraX's matrix for one output of the current frame.
-     * @param outputSize that output's size (sensor orientation, before rotation).
+     * @param outputSize that output's size.
+     * @param outputUpright that output's upright transform, as passed to [render].
      */
     fun renderThumbnails(
         looks: List<Look>,
         outputTexMatrix: FloatArray,
         outputSize: Size,
+        outputUpright: Affine,
         thumbSize: Int,
     ): List<Bitmap> {
         val core = requireEgl()
@@ -127,7 +127,7 @@ internal class GlFilterRenderer {
         ensureThumbTarget(width, height)
 
         // Thumbnail position (upright, top-left origin) -> output image -> output GL coords -> texture.
-        val swapped = rotationDegrees % 180 != 0
+        val swapped = outputUpright.swapsAxes
         val uprightW = if (swapped) outputSize.height else outputSize.width
         val uprightH = if (swapped) outputSize.width else outputSize.height
         val crop = if (uprightW > uprightH) {
@@ -135,8 +135,7 @@ internal class GlFilterRenderer {
         } else {
             Affine.scaleAboutCentre(1f, uprightW.toFloat() / uprightH)
         }
-        val mirror = if (mirroring) Affine.FLIP_X else Affine.IDENTITY
-        val toTexCoord = Affine.FLIP_Y * Affine.unrotateClockwise(rotationDegrees) * mirror * crop
+        val toTexCoord = Affine.FLIP_Y * outputUpright.inverseAligned() * crop
         val texMatrix = FloatArray(16)
         Matrix.multiplyMM(texMatrix, 0, outputTexMatrix, 0, toTexCoord.toMat4(), 0)
 
@@ -178,11 +177,6 @@ internal class GlFilterRenderer {
         thumbFbo = 0
         thumbTexture = 0
         thumbBuffer = null
-    }
-
-    private fun uprightTransform(): Affine {
-        val rotate = Affine.rotateClockwise(rotationDegrees)
-        return if (mirroring) Affine.FLIP_X * rotate else rotate
     }
 
     private fun ensureThumbTarget(width: Int, height: Int) {

@@ -4,8 +4,12 @@ import com.example.camerafilterapp.filter.Look
 import com.example.camerafilterapp.filter.Looks
 import com.example.camerafilterapp.filter.LutCache
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.nio.ByteBuffer
+import javax.imageio.ImageIO
 import kotlin.math.abs
 
 class LookTest {
@@ -28,9 +32,12 @@ class LookTest {
         }
     }
 
+    /** Looks whose colour comes from [Look.grade]; LUT-image looks are checked separately. */
+    private val gradedLooks = Looks.all.filter { it.lutImage == null }
+
     @Test
     fun everyLookStaysInRange() {
-        Looks.all.forEach { look ->
+        gradedLooks.forEach { look ->
             gridSamples().forEach { rgb ->
                 look.grade(rgb)
                 rgb.forEach { assertTrue("${look.id} produced $it", it in 0f..1f) }
@@ -53,7 +60,7 @@ class LookTest {
     @Test
     fun colourLooksAreClearlyVisible() {
         // Light-leak looks get most of their character from the shader glow, not the grade.
-        Looks.all.filter { !it.isIdentity && it.lightLeak == null }.forEach { look ->
+        gradedLooks.filter { !it.isIdentity && it.lightLeak == null }.forEach { look ->
             var total = 0f
             var count = 0
             gridSamples().forEach { rgb ->
@@ -80,6 +87,119 @@ class LookTest {
             }
         }
     }
+
+    @Test
+    fun neutralLookupImageGivesIdentityLut() {
+        // 64 x 64 (16 levels, 4 tiles per row) and the usual 512 x 512 (64 levels, 8 per row).
+        for (side in listOf(64, 512)) {
+            val lut = LutCache.fromLookupImage(neutralLookupImage(side), side)
+            val n = LutCache.SIZE
+            for (g in 0 until n) for (b in 0 until n) for (r in 0 until n) {
+                val index = (g * LutCache.WIDTH + b * n + r) * 4
+                val expected = floatArrayOf(r / (n - 1f), g / (n - 1f), b / (n - 1f))
+                // One level of rounding from the image plus one from the LUT.
+                for (c in 0..2) assertEquals("side $side", expected[c], byteAt(lut, index + c), 2f / 255f)
+            }
+        }
+    }
+
+    @Test
+    fun rejectsImagesThatAreNotLookupSized() {
+        for (side in listOf(100, 256, 300)) {
+            assertThrows(IllegalArgumentException::class.java) { LutCache.levelsFor(side) }
+        }
+        assertEquals(64, LutCache.levelsFor(512))
+    }
+
+    @Test
+    fun lutImageAssetsAreValidAndClearlyVisible() {
+        val looks = Looks.all.filter { it.lutImage != null }
+        assertTrue("no LUT image looks to check", looks.isNotEmpty())
+        looks.forEach { look ->
+            val file = File("src/main/assets/${look.lutImage}")
+            assertTrue("${look.id}: missing ${file.path}", file.isFile)
+            val lut = if (file.extension.equals("cube", ignoreCase = true)) {
+                LutCache.fromCube(file.readText())
+            } else {
+                val image = ImageIO.read(file)
+                assertEquals("${look.id}: not square", image.width, image.height)
+                val side = image.width
+                LutCache.fromLookupImage(image.getRGB(0, 0, side, side, null, 0, side), side)
+            }
+
+            val n = LutCache.SIZE
+            var total = 0f
+            for (g in 0 until n) for (b in 0 until n) for (r in 0 until n) {
+                val index = (g * LutCache.WIDTH + b * n + r) * 4
+                total += (abs(byteAt(lut, index) - r / (n - 1f)) + abs(byteAt(lut, index + 1) - g / (n - 1f)) +
+                    abs(byteAt(lut, index + 2) - b / (n - 1f))) / 3f
+            }
+            val mean = total / (n * n * n)
+            assertTrue("${look.id} mean change $mean is too subtle", mean >= MIN_MEAN_CHANGE)
+        }
+    }
+
+    @Test
+    fun neutralCubeGivesIdentityLut() {
+        for (levels in listOf(2, 17, 32)) {
+            val lut = LutCache.fromCube(neutralCube(levels))
+            val n = LutCache.SIZE
+            for (g in 0 until n) for (b in 0 until n) for (r in 0 until n) {
+                val index = (g * LutCache.WIDTH + b * n + r) * 4
+                val expected = floatArrayOf(r / (n - 1f), g / (n - 1f), b / (n - 1f))
+                for (c in 0..2) assertEquals("levels $levels", expected[c], byteAt(lut, index + c), 1f / 255f)
+            }
+        }
+    }
+
+    @Test
+    fun cubeChannelOrderIsRedFastest() {
+        // Swap red and blue: if the parser read blue fastest, this would come out as identity.
+        val swapped = neutralCube(2).lines().joinToString("\n") { line ->
+            val parts = line.split(" ")
+            if (parts.size == 3 && parts[0].toFloatOrNull() != null) "${parts[2]} ${parts[1]} ${parts[0]}" else line
+        }
+        val lut = LutCache.fromCube(swapped)
+        val n = LutCache.SIZE
+        val pureRed = (0 * LutCache.WIDTH + 0 * n + (n - 1)) * 4
+        assertEquals(0f, byteAt(lut, pureRed), 1f / 255f)
+        assertEquals(1f, byteAt(lut, pureRed + 2), 1f / 255f)
+    }
+
+    @Test
+    fun rejectsMalformedCubes() {
+        val bad = listOf(
+            "0 0 0", // data before size
+            "LUT_3D_SIZE 2\n0 0 0", // too few rows
+            "LUT_1D_SIZE 2\n0 0 0\n1 1 1",
+            "LUT_3D_SIZE 2\nDOMAIN_MAX 2.0 2.0 2.0\n" + neutralCube(2).substringAfter("LUT_3D_SIZE 2\n"),
+        )
+        bad.forEach { text -> assertThrows(text, IllegalArgumentException::class.java) { LutCache.fromCube(text) } }
+    }
+
+    /** The do-nothing .cube LUT: red changes fastest, then green, then blue. */
+    private fun neutralCube(levels: Int) = buildString {
+        append("# comment\nTITLE \"neutral\"\nLUT_3D_SIZE $levels\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n")
+        val step = 1f / (levels - 1)
+        for (b in 0 until levels) for (g in 0 until levels) for (r in 0 until levels) {
+            append("${r * step} ${g * step} ${b * step}\n")
+        }
+    }
+
+    /** The do-nothing lookup image, in the layout tools/lut_png.py writes. */
+    private fun neutralLookupImage(side: Int): IntArray {
+        val levels = LutCache.levelsFor(side)
+        val tiles = side / levels
+        return IntArray(side * side) { i ->
+            val x = i % side
+            val y = i / side
+            val b = (y / levels) * tiles + x / levels
+            fun level(v: Int) = (v * 255f / (levels - 1)).toInt()
+            (0xFF shl 24) or (level(x % levels) shl 16) or (level(y % levels) shl 8) or level(b)
+        }
+    }
+
+    private fun byteAt(buffer: ByteBuffer, index: Int) = (buffer.get(index).toInt() and 0xFF) / 255f
 
     private companion object {
         /** About 13 of 255 levels on average across the colour cube. */

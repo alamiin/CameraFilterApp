@@ -1,6 +1,7 @@
 package com.example.camerafilterapp.ui
 
 import android.graphics.Bitmap
+import androidx.camera.core.ExposureState
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -150,60 +151,97 @@ private fun FilterThumb(look: Look, thumbnail: Bitmap?, selected: Boolean, onCli
     }
 }
 
-enum class Adjustment(val label: String) { INTENSITY("Intensity"), BRIGHTNESS("Brightness") }
+enum class Adjustment(val label: String) { INTENSITY("Intensity"), BRIGHTNESS("Brightness"), EXPOSURE("Exposure") }
 
-/** One slider that edits either the look's intensity or the global brightness. */
+/**
+ * One slider that edits the look's intensity, the global brightness, or the camera's exposure
+ * compensation. Exposure changes what the sensor captures, so unlike brightness it recovers
+ * shadow or highlight detail instead of shifting already-clipped pixels.
+ *
+ * @param exposure the bound camera's exposure range; the Exposure option is hidden when it's null or unsupported.
+ */
 @Composable
 fun AdjustmentSlider(
     showIntensity: Boolean,
     intensity: Float,
     brightness: Float,
+    exposure: ExposureState?,
+    exposureIndex: Int,
     onIntensity: (Float) -> Unit,
     onBrightness: (Float) -> Unit,
+    onExposure: (Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var adjustment by remember { mutableStateOf(Adjustment.INTENSITY) }
-    val active = if (showIntensity) adjustment else Adjustment.BRIGHTNESS
+    val exposureRange = exposure?.takeIf { it.isExposureCompensationSupported }?.exposureCompensationRange
+    fun isEnabled(option: Adjustment) = when (option) {
+        Adjustment.INTENSITY -> showIntensity
+        Adjustment.BRIGHTNESS -> true
+        Adjustment.EXPOSURE -> exposureRange != null
+    }
+    val active = if (isEnabled(adjustment)) adjustment else Adjustment.BRIGHTNESS
 
-    Row(modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-        Adjustment.entries.forEach { option ->
-            val enabled = option == Adjustment.BRIGHTNESS || showIntensity
-            Text(
-                text = option.label,
-                color = when {
-                    option == active -> Color.White
-                    enabled -> Color.White.copy(alpha = 0.5f)
-                    else -> Color.White.copy(alpha = 0.2f)
-                },
-                fontWeight = if (option == active) FontWeight.SemiBold else FontWeight.Normal,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier
-                    .clickable(enabled = enabled) { adjustment = option }
-                    .padding(end = 12.dp, top = 6.dp, bottom = 6.dp),
-            )
+    Column(modifier.padding(horizontal = 16.dp)) {
+        Row {
+            Adjustment.entries.filter { it != Adjustment.EXPOSURE || isEnabled(it) }.forEach { option ->
+                Text(
+                    text = option.label,
+                    color = when {
+                        option == active -> Color.White
+                        isEnabled(option) -> Color.White.copy(alpha = 0.5f)
+                        else -> Color.White.copy(alpha = 0.2f)
+                    },
+                    fontWeight = if (option == active) FontWeight.SemiBold else FontWeight.Normal,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .clickable(enabled = isEnabled(option)) { adjustment = option }
+                        .padding(end = 12.dp, top = 6.dp, bottom = 2.dp),
+                )
+            }
         }
-        val sliderColors = SliderDefaults.colors(
-            thumbColor = Color.White,
-            activeTrackColor = Color.White,
-            inactiveTrackColor = Color.White.copy(alpha = 0.25f),
-        )
-        if (active == Adjustment.INTENSITY) {
-            Slider(
-                value = intensity,
-                onValueChange = onIntensity,
-                colors = sliderColors,
-                modifier = Modifier.weight(1f),
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val sliderColors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = Color.White,
+                inactiveTrackColor = Color.White.copy(alpha = 0.25f),
             )
-            ValueLabel("${(intensity * 100).roundToInt()}") { onIntensity(1f) }
-        } else {
-            Slider(
-                value = brightness,
-                onValueChange = onBrightness,
-                valueRange = FilterSettings.MIN_BRIGHTNESS..FilterSettings.MAX_BRIGHTNESS,
-                colors = sliderColors,
-                modifier = Modifier.weight(1f),
-            )
-            ValueLabel("%+d".format((brightness / FilterSettings.MAX_BRIGHTNESS * 100).roundToInt())) { onBrightness(0f) }
+            when (active) {
+                Adjustment.INTENSITY -> {
+                    Slider(
+                        value = intensity,
+                        onValueChange = onIntensity,
+                        colors = sliderColors,
+                        modifier = Modifier.weight(1f),
+                    )
+                    ValueLabel("${(intensity * 100).roundToInt()}") { onIntensity(1f) }
+                }
+                Adjustment.BRIGHTNESS -> {
+                    Slider(
+                        value = brightness,
+                        onValueChange = onBrightness,
+                        valueRange = FilterSettings.MIN_BRIGHTNESS..FilterSettings.MAX_BRIGHTNESS,
+                        colors = sliderColors,
+                        modifier = Modifier.weight(1f),
+                    )
+                    ValueLabel("%+d".format((brightness / FilterSettings.MAX_BRIGHTNESS * 100).roundToInt())) { onBrightness(0f) }
+                }
+                Adjustment.EXPOSURE -> {
+                    val state = checkNotNull(exposure)
+                    val range = checkNotNull(exposureRange)
+                    val index = exposureIndex.coerceIn(range.lower, range.upper)
+                    Slider(
+                        value = index.toFloat(),
+                        onValueChange = { onExposure(it.roundToInt()) },
+                        valueRange = range.lower.toFloat()..range.upper.toFloat(),
+                        // One slider notch per camera step, typically 1/3 or 1/2 EV.
+                        steps = maxOf(0, range.upper - range.lower - 1),
+                        colors = sliderColors,
+                        modifier = Modifier.weight(1f),
+                    )
+                    val ev = index * state.exposureCompensationStep.toFloat()
+                    ValueLabel("%+.1f".format(ev)) { onExposure(0) }
+                }
+            }
         }
     }
 }
